@@ -93,6 +93,11 @@ export class AuthService {
       const payload = this.JwtService.verify(token, {
         secret: process.env.JWT_ACCESS_SECRET,
       });
+      // check if token expired
+      if (payload.exp < Date.now()) {
+        throw new InternalServerErrorException('expired token');
+      }
+
       return await this.prismaService.user.findUnique({
         where: {
           id: payload.id,
@@ -110,6 +115,9 @@ export class AuthService {
       });
       if (payload.type !== 'refresh') {
         throw new InternalServerErrorException('Invalid token');
+      }
+      if (payload.exp < Date.now()) {
+        throw new InternalServerErrorException('Expired token');
       }
       const user = await this.prismaService.user.findUnique({
         where: {
