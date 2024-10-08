@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/services/prisma.service';
-import { InternalServerErrorException } from '@nestjs/common';
+import {
+  InternalServerErrorException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
-// uses passport oauth2 discord strategy
 export class AuthService {
   constructor(
     private readonly prismaService: PrismaService,
@@ -47,26 +49,29 @@ export class AuthService {
   }
 
   async generateTokens(user: any) {
-    const authtokenpayload = {
-      id: user.id,
-      discord_id: user.discord_id,
-      iat: Date.now(),
-      exp: Date.now() + 1000 * 60,
-      type: 'access',
-    };
-    const refreshTokenPayload = {
-      id: user.id,
-      discord_id: user.discord_id,
-      iat: Date.now(),
-      exp: Date.now() + 1000 * 60 * 60 * 24 * 7,
-      type: 'refresh',
-    };
-    const accessToken = this.JwtService.sign(authtokenpayload, {
-      secret: process.env.JWT_ACCESS_SECRET,
-    });
-    const refreshToken = this.JwtService.sign(refreshTokenPayload, {
-      secret: process.env.JWT_REFRESH_SECRET,
-    });
+    const accessToken = this.JwtService.sign(
+      {
+        id: user.id,
+        discord_id: user.discord_id,
+        type: 'access',
+      },
+      {
+        secret: process.env.JWT_ACCESS_SECRET,
+        expiresIn: '1m', // 1 minute
+      },
+    );
+
+    const refreshToken = this.JwtService.sign(
+      {
+        id: user.id,
+        discord_id: user.discord_id,
+        type: 'refresh',
+      },
+      {
+        secret: process.env.JWT_REFRESH_SECRET,
+        expiresIn: '7d', // 7 days
+      },
+    );
 
     return { accessToken, refreshToken };
   }
@@ -93,18 +98,17 @@ export class AuthService {
       const payload = this.JwtService.verify(token, {
         secret: process.env.JWT_ACCESS_SECRET,
       });
-      // check if token expired
-      if (payload.exp < Date.now()) {
-        throw new InternalServerErrorException('expired token');
-      }
 
       return await this.prismaService.user.findUnique({
-        where: {
-          id: payload.id,
-        },
+        where: { id: payload.id },
       });
     } catch (error) {
-      throw new InternalServerErrorException(error);
+      if (error.name === 'TokenExpiredError') {
+        throw new UnauthorizedException('Token has expired');
+      } else if (error.name === 'JsonWebTokenError') {
+        throw new UnauthorizedException('Invalid token');
+      }
+      throw new InternalServerErrorException('An unexpected error occurred');
     }
   }
 
@@ -115,9 +119,6 @@ export class AuthService {
       });
       if (payload.type !== 'refresh') {
         throw new InternalServerErrorException('Invalid token');
-      }
-      if (payload.exp < Date.now()) {
-        throw new InternalServerErrorException('Expired token');
       }
       const user = await this.prismaService.user.findUnique({
         where: {
