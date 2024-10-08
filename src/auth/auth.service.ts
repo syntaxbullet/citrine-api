@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../services/prisma.service';
+import { PrismaService } from '../prisma.service';
 import {
   InternalServerErrorException,
   UnauthorizedException,

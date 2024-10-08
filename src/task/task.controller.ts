@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Put, Delete } from '@nestjs/common';
-import { TaskService } from '../services/task.service';
-import { ReminderService } from '../services/reminder.service';
+import { TaskService } from './task.service';
+import { ReminderService } from '../reminder/reminder.service';
 
 @Controller('tasks')
 export class TaskController {

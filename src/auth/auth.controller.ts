@@ -1,6 +1,6 @@
 import { DiscordGuard } from '../auth/discord.guard';
 import { AuthenticatedGuard } from '../auth/authenticated.guard';
-import { AuthService } from '../services/auth.service';
+import { AuthService } from './auth.service';
 import { Controller, Get, UseGuards, Req, Post } from '@nestjs/common';
 
 @Controller('auth')
