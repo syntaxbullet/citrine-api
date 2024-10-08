@@ -128,6 +128,25 @@ export class AuthService {
       if (!user) {
         throw new InternalServerErrorException('User not found');
       }
+      const isRewoked = await this.prismaService.refreshToken.findFirst({
+        where: {
+          token: token,
+          deletedAt: {
+            not: null,
+          },
+        },
+      });
+      if (isRewoked) {
+        throw new UnauthorizedException('Token has been revoked');
+      }
+      // revoke the old token
+      await this.prismaService.refreshToken.create({
+        data: {
+          token: token,
+          userId: user.id,
+          deletedAt: new Date(),
+        },
+      });
       return this.generateTokens(user);
     } catch (error) {
       throw new InternalServerErrorException(error);
