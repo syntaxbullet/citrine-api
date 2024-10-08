@@ -1,19 +1,49 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'src/services/prisma.service';
 import {
   InternalServerErrorException,
   UnauthorizedException,
+  NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { User } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prismaService: PrismaService,
-    private readonly JwtService: JwtService,
+    private readonly jwtService: JwtService,
   ) {}
 
-  async validateUser(profile: any) {
+  // Selects the appropriate JWT secret based on token type
+  private getJwtSecret(type: string): string {
+    return type === 'access'
+      ? process.env.JWT_ACCESS_SECRET
+      : process.env.JWT_REFRESH_SECRET;
+  }
+
+  // Handles common JWT token errors and throws appropriate exceptions
+  private handleTokenError(error: any): never {
+    if (error.name === 'TokenExpiredError') {
+      this.logger.warn('Token has expired');
+      throw new UnauthorizedException('Token has expired');
+    } else if (error.name === 'JsonWebTokenError') {
+      this.logger.warn('Invalid token');
+      throw new UnauthorizedException('Invalid token');
+    }
+    this.logger.error('Failed to validate token', error.stack);
+    throw new InternalServerErrorException('Failed to validate token.');
+  }
+
+  /**
+   * Validates the user by Discord profile.
+   * Updates existing user or creates a new one if not found.
+   * @param profile - Discord profile information
+   * @returns The validated or newly created user
+   */
+  async validateUser(profile: any): Promise<User> {
     try {
       let user = await this.prismaService.user.findUnique({
         where: {
@@ -21,7 +51,9 @@ export class AuthService {
         },
       });
       if (user) {
-        return await this.prismaService.user.update({
+        // Update user details if the user already exists
+        this.logger.log(`Updating user details`);
+        user = await this.prismaService.user.update({
           where: {
             discord_id: profile.id,
           },
@@ -31,8 +63,9 @@ export class AuthService {
             avatar: profile.avatar,
           },
         });
-      }
-      if (!user) {
+      } else {
+        // Create a new user if not found
+        this.logger.log(`Creating new user`);
         user = await this.prismaService.user.create({
           data: {
             discord_id: profile.id,
@@ -44,112 +77,173 @@ export class AuthService {
       }
       return user;
     } catch (error) {
-      throw new InternalServerErrorException(error);
+      this.logger.error('Failed to validate or create user', error.stack);
+      throw new InternalServerErrorException(
+        'Failed to validate or create user.',
+      );
     }
   }
 
-  async generateTokens(user: any) {
-    const accessToken = this.JwtService.sign(
-      {
-        id: user.id,
-        discord_id: user.discord_id,
-        type: 'access',
-      },
-      {
-        secret: process.env.JWT_ACCESS_SECRET,
-        expiresIn: '1m', // 1 minute
-      },
-    );
-
-    const refreshToken = this.JwtService.sign(
-      {
-        id: user.id,
-        discord_id: user.discord_id,
-        type: 'refresh',
-      },
-      {
-        secret: process.env.JWT_REFRESH_SECRET,
-        expiresIn: '7d', // 7 days
-      },
-    );
-
-    return { accessToken, refreshToken };
-  }
-
-  async validateToken(token: string, type: string) {
+  /**
+   * Generates access and refresh tokens for the user.
+   * @param user - The user for whom tokens are being generated
+   * @returns An object containing access and refresh tokens
+   */
+  async generateTokens(
+    user: User,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      if (type === 'access') {
-        return this.JwtService.verify(token, {
+      this.logger.log(`Generating tokens for user`);
+      const accessToken = this.jwtService.sign(
+        {
+          id: user.id,
+          discord_id: user.discord_id,
+          type: 'access',
+        },
+        {
           secret: process.env.JWT_ACCESS_SECRET,
-        });
-      }
-      if (type === 'refresh') {
-        return this.JwtService.verify(token, {
+          expiresIn: '30m', // 30 minutes
+        },
+      );
+
+      const refreshToken = this.jwtService.sign(
+        {
+          id: user.id,
+          discord_id: user.discord_id,
+          type: 'refresh',
+        },
+        {
           secret: process.env.JWT_REFRESH_SECRET,
-        });
-      }
+          expiresIn: '7d', // 7 days
+          jwtid: Math.random().toString(36).substr(2, 10), // Add a unique identifier for each token
+        },
+      );
+      // Invalidate previous refresh tokens for the user
+      this.logger.log(`Invalidating previous refresh tokens for user`);
+      await this.prismaService.$transaction([
+        this.prismaService.refreshToken.updateMany({
+          where: {
+            userId: user.id,
+            isRevoked: false,
+          },
+          data: {
+            isRevoked: true,
+          },
+        }),
+        this.prismaService.refreshToken.create({
+          data: {
+            userId: user.id,
+            token: refreshToken,
+            isRevoked: false,
+          },
+        }),
+      ]);
+
+      return { accessToken, refreshToken };
     } catch (error) {
-      throw new InternalServerErrorException(error);
+      this.logger.error('Failed to generate tokens', error.stack);
+      throw new InternalServerErrorException('Failed to generate tokens.');
     }
   }
 
-  async getUserFromToken(token: string) {
+  /**
+   * Validates a given JWT token based on its type (access or refresh).
+   * @param token - The JWT token to be validated
+   * @param type - The type of token ('access' or 'refresh')
+   * @returns The decoded token payload if valid
+   */
+  async validateToken(token: string, type: string): Promise<any> {
     try {
-      const payload = this.JwtService.verify(token, {
-        secret: process.env.JWT_ACCESS_SECRET,
-      });
+      this.logger.log(`Validating token`);
+      const secret = this.getJwtSecret(type);
+      return this.jwtService.verify(token, { secret });
+    } catch (error) {
+      this.handleTokenError(error);
+    }
+  }
 
-      return await this.prismaService.user.findUnique({
+  /**
+   * Retrieves a user based on the provided access token.
+   * @param token - The access token
+   * @returns The user associated with the token
+   */
+  async getUserFromToken(token: string): Promise<User> {
+    try {
+      this.logger.log('Getting user from token');
+      const payload = await this.validateToken(token, 'access');
+
+      const user = await this.prismaService.user.findUnique({
         where: { id: payload.id },
       });
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        throw new UnauthorizedException('Token has expired');
-      } else if (error.name === 'JsonWebTokenError') {
-        throw new UnauthorizedException('Invalid token');
+
+      if (!user) {
+        this.logger.warn(`User not found`);
+        throw new NotFoundException('User not found');
       }
-      throw new InternalServerErrorException('An unexpected error occurred');
+
+      return user;
+    } catch (error) {
+      this.handleTokenError(error);
     }
   }
 
-  async refreshToken(token: string) {
+  /**
+   * Refreshes the access and refresh tokens using a valid refresh token.
+   * Revokes the old refresh token and generates new tokens.
+   * @param token - The refresh token
+   * @returns An object containing new access and refresh tokens
+   */
+  async refreshToken(
+    token: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      const payload = this.JwtService.verify(token, {
-        secret: process.env.JWT_REFRESH_SECRET,
-      });
-      if (payload.type !== 'refresh') {
-        throw new InternalServerErrorException('Invalid token');
-      }
+      this.logger.log('Refreshing tokens using refresh token');
+      const payload = await this.validateToken(token, 'refresh');
+
       const user = await this.prismaService.user.findUnique({
         where: {
           id: payload.id,
         },
       });
       if (!user) {
-        throw new InternalServerErrorException('User not found');
+        this.logger.warn(`User not found with ID: ${payload.id}`);
+        throw new NotFoundException('User not found');
       }
-      const isRewoked = await this.prismaService.refreshToken.findFirst({
+      const isRevoked = await this.prismaService.refreshToken.findFirst({
         where: {
           token: token,
-          deletedAt: {
-            not: null,
-          },
+          isRevoked: true,
         },
       });
-      if (isRewoked) {
+      if (isRevoked) {
+        this.logger.warn('Token has been revoked');
         throw new UnauthorizedException('Token has been revoked');
       }
-      // revoke the old token
-      await this.prismaService.refreshToken.create({
-        data: {
-          token: token,
-          userId: user.id,
-          deletedAt: new Date(),
-        },
-      });
+      // revoke the old token and generate a new one
+      this.logger.log(`Revoking old refresh token for user`);
+      await this.prismaService.$transaction([
+        this.prismaService.refreshToken.updateMany({
+          where: {
+            userId: user.id,
+            isRevoked: false,
+          },
+          data: {
+            isRevoked: true,
+          },
+        }),
+        // create a new entry for the passed token marking it as revoked
+        this.prismaService.refreshToken.create({
+          data: {
+            token: token,
+            userId: user.id,
+            isRevoked: true,
+          },
+        }),
+      ]);
+      // generate new tokens
       return this.generateTokens(user);
     } catch (error) {
-      throw new InternalServerErrorException(error);
+      this.handleTokenError(error);
     }
   }
 }
