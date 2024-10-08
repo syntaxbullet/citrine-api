@@ -1,5 +1,5 @@
 import { DiscordGuard } from '../auth/discord.guard';
-import { AuthenticatedGuard } from 'src/auth/authenticated.guard';
+import { AuthenticatedGuard } from '../auth/authenticated.guard';
 import { AuthService } from '../services/auth.service';
 import { Controller, Get, UseGuards, Req, Post } from '@nestjs/common';
 

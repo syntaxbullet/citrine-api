@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { DiscordStrategy } from 'src/auth/discord.strategy';
-import { AuthController } from 'src/controllers/auth.controller';
-import { AuthService } from 'src/services/auth.service';
-import { PrismaService } from 'src/services/prisma.service';
+import { DiscordStrategy } from '../auth/discord.strategy';
+import { AuthController } from '../controllers/auth.controller';
+import { AuthService } from '../services/auth.service';
+import { PrismaService } from '../services/prisma.service';
 
 @Module({
   imports: [
