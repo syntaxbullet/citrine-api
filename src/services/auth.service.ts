@@ -115,7 +115,7 @@ export class AuthService {
         {
           secret: process.env.JWT_REFRESH_SECRET,
           expiresIn: '7d', // 7 days
-          jwtid: Math.random().toString(36).substr(2, 10), // Add a unique identifier for each token
+          jwtid: Math.random().toString(36).substring(2, 12), // Add a unique identifier for each token
         },
       );
       // Invalidate previous refresh tokens for the user
